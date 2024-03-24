@@ -30,10 +30,12 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False):
     def grouped_iterations_task(sub_iterable):
         results = []
         for el in sub_iterable:
-            if isinstance(el, int):
-                result = fct(*(el,))
-            else:
+            # Check if `el` is an iterable that should be unpacked
+            if isinstance(el, (list, tuple, set)):
                 result = fct(*el)
+            else:
+                # For single values or other non-tuple iterables, pass them as a single-item tuple
+                result = fct(el)
             if return_results:
                 results.append(result)
         return results
