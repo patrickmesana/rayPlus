@@ -1,6 +1,6 @@
 import ray
 
-def parallel_loop(iterable, fct, n_tasks=4, return_results=False):
+def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True):
     """
     Executes a function `fct` in parallel across chunks of `iterable` using Ray.
 
@@ -20,7 +20,9 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False):
     Note:
     - This function requires Ray to be initialized and will do so upon execution. Ray is shutdown after task completion.
     """
-    ray.init()
+
+    if init_and_shutdown_ray:
+        ray.init()
 
     # Calculate the size of each chunk to distribute tasks evenly
     n = len(iterable)
@@ -50,7 +52,8 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False):
 
     results = ray.get(tasks)
 
-    ray.shutdown()
+    if init_and_shutdown_ray:
+        ray.shutdown()
 
     if return_results:
         # Flatten the list of results if needed
