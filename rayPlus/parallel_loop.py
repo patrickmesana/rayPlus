@@ -1,6 +1,6 @@
 import ray
 
-def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True):
+def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, use_object_store=False):
     """
     Executes a function `fct` in parallel across chunks of `iterable` using Ray.
 
@@ -24,19 +24,28 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutd
     if init_and_shutdown_ray:
         ray.init()
 
-    # Calculate the size of each chunk to distribute tasks evenly
     n = len(iterable)
     chunk_size = max(n // n_tasks, 1)  # Ensuring at least 1 item per task
 
+    if use_object_store:
+        # Store the iterable in the Ray object store
+        iterable_ref = ray.put(iterable)
+    else:
+        iterable_ref = iterable
+
     @ray.remote
-    def grouped_iterations_task(sub_iterable):
+    def grouped_iterations_task(iterable, start_index=None, end_index=None, use_object_store=False):
         results = []
+        # Fetch the actual iterable based on whether it's a reference or a direct list
+        if use_object_store:
+            sub_iterable = iterable[start_index:end_index]
+        else:
+            sub_iterable = iterable[start_index:end_index] if start_index is not None else iterable
+
         for el in sub_iterable:
-            # Check if `el` is an iterable that should be unpacked
             if isinstance(el, (list, tuple, set)):
                 result = fct(*el)
             else:
-                # For single values or other non-tuple iterables, pass them as a single-item tuple
                 result = fct(el)
             if return_results:
                 results.append(result)
@@ -44,10 +53,13 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutd
 
     tasks = []
     for i in range(0, n, chunk_size):
-        # Adjust the end index to not exceed the iterable's length
         end_index = min(i + chunk_size, n)
-        sub_iterable = iterable[i:end_index]
-        task = grouped_iterations_task.remote(sub_iterable)
+        # Pass indices and reference to the remote function if using object store, otherwise pass slices directly
+        if use_object_store:
+            task = grouped_iterations_task.remote(iterable_ref, i, end_index, use_object_store=True)
+        else:
+            sub_iterable = iterable[i:end_index]
+            task = grouped_iterations_task.remote(sub_iterable, use_object_store=False)
         tasks.append(task)
 
     results = ray.get(tasks)
