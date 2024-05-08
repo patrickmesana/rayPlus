@@ -1,4 +1,5 @@
 import ray
+import time
 
 def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, use_object_store=False):
     """
@@ -27,20 +28,12 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutd
     n = len(iterable)
     chunk_size = max(n // n_tasks, 1)  # Ensuring at least 1 item per task
 
-    if use_object_store:
-        # Store the iterable in the Ray object store
-        iterable_ref = ray.put(iterable)
-    else:
-        iterable_ref = iterable
-
     @ray.remote
     def grouped_iterations_task(iterable, start_index=None, end_index=None, use_object_store=False):
         results = []
         # Fetch the actual iterable based on whether it's a reference or a direct list
-        if use_object_store:
-            sub_iterable = iterable[start_index:end_index]
-        else:
-            sub_iterable = iterable[start_index:end_index] if start_index is not None else iterable
+
+        sub_iterable = iterable[start_index:end_index] if start_index is not None else iterable
 
         for el in sub_iterable:
             if isinstance(el, (list, tuple, set)):
@@ -54,12 +47,8 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutd
     tasks = []
     for i in range(0, n, chunk_size):
         end_index = min(i + chunk_size, n)
-        # Pass indices and reference to the remote function if using object store, otherwise pass slices directly
-        if use_object_store:
-            task = grouped_iterations_task.remote(iterable_ref, i, end_index, use_object_store=True)
-        else:
-            sub_iterable = iterable[i:end_index]
-            task = grouped_iterations_task.remote(sub_iterable, use_object_store=False)
+        sub_iterable = iterable[i:end_index]
+        task = grouped_iterations_task.remote(sub_iterable, use_object_store=False)
         tasks.append(task)
 
     results = ray.get(tasks)
@@ -73,3 +62,85 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutd
         return flatten_results
     else:
         return None
+
+
+
+# The monitoring actor allows to have an elegant way to collect states without locks or the need to use timers
+@ray.remote
+class MonitoringActor:
+    def __init__(self):
+        self.states = {}  # Stores task_id and their latest completion percentage
+
+    def update_state(self, task_id, completion_percentage):
+        self.states[task_id] = completion_percentage  # Store completion as a numerical value
+
+    def get_states(self):
+        return self.states
+
+    def get_average_completion(self):
+        if not self.states:
+            return 0
+        total_completion = sum(self.states.values())
+        average_completion = total_completion / len(self.states)
+        return average_completion
+
+    
+
+@ray.remote
+class TaskActor:
+    def __init__(self, monitoring_actor):
+        self.monitoring_actor = monitoring_actor
+
+    def process_chunk(self, iterable, fct, start_index, end_index, return_results, task_id):
+        results = []
+        total_elements = end_index - start_index
+        for index, el in enumerate(iterable[start_index:end_index], start=start_index):
+            completion_percentage = (index - start_index + 1) / total_elements * 100
+            self.monitoring_actor.update_state.remote(task_id, completion_percentage)
+
+            if isinstance(el, (list, tuple, set)):
+                result = fct(*el)
+            else:
+                result = fct(el)
+            if return_results:
+                results.append(result)
+
+        return results
+
+
+
+
+def parallel_loop_with_progress(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, progress_update_interval=2):
+    if init_and_shutdown_ray:
+        ray.init()
+
+    monitoring_actor = MonitoringActor.remote()  # Initialize the monitoring actor
+    n = len(iterable)
+    chunk_size = max(n // n_tasks, 1)
+
+    actors = [TaskActor.remote(monitoring_actor) for _ in range(n_tasks)]
+    tasks = []
+    for i, actor in enumerate(actors):
+        end_index = min(i * chunk_size + chunk_size, n)
+        task = actor.process_chunk.remote(iterable, fct, i * chunk_size, end_index, return_results, i)
+        tasks.append(task)
+
+    pending_tasks = list(tasks)
+    while pending_tasks:
+        completed_tasks, pending_tasks = ray.wait(pending_tasks, num_returns=1, timeout=2)
+        average_completion = ray.get(monitoring_actor.get_average_completion.remote())
+        print(f"Completion: {average_completion:.2f}%")
+        time.sleep(progress_update_interval)
+
+    if return_results:
+        results = ray.get(tasks)
+        flatten_results = [item for sublist in results for item in sublist]
+        results = flatten_results
+
+    if init_and_shutdown_ray:
+        ray.shutdown()
+
+    return results if return_results else None
+
+
+
