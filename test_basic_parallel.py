@@ -20,3 +20,6 @@ parallel_loop(list(enumerate(list(range(n)))), identity_fct, return_results=True
 # %%
 
 # %%
+from rayPlus import parallel_loop_lazy
+parallel_loop_lazy(enumerate(list(range(n))), n , identity_fct, return_results=True, n_tasks=4)
+# %%

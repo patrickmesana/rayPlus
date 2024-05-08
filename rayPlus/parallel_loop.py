@@ -1,5 +1,6 @@
 import ray
 import time
+import itertools
 
 def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, use_object_store=False):
     """
@@ -62,6 +63,68 @@ def parallel_loop(iterable, fct, n_tasks=4, return_results=False, init_and_shutd
         return flatten_results
     else:
         return None
+    
+
+def parallel_loop_lazy(iterable, total_length, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, use_object_store=False):
+    """
+    Executes a function `fct` in parallel across chunks of `iterable` using Ray.
+
+    This function is designed to run independent iterations of a loop in parallel, 
+    distributing the work across `n_tasks` tasks. It's crucial that the iterations 
+    of the loop are independent to ensure correct execution and results.
+
+    Parameters:
+    - iterable (iterable): The iterable to process in parallel.
+    - fct (function): The function to apply to each element of `iterable`. This function should be independent across iterations.
+    - n_tasks (int, optional): The number of parallel tasks to use. Defaults to 4.
+    - return_results (bool, optional): Flag to indicate whether to return the results of applying `fct` to the elements of `iterable`. Defaults to False.
+
+    Returns:
+    - list or None: If `return_results` is True, returns a list of the results of the function application. Otherwise, returns None.
+    
+    Note:
+    - This function requires Ray to be initialized and will do so upon execution. Ray is shutdown after task completion.
+    """
+
+    if init_and_shutdown_ray:
+            ray.init()
+
+    # Initialize an iterator from the iterable
+    it = iter(iterable)
+    # Determine chunk size based on the total length and number of tasks
+
+    chunk_size = max(total_length // n_tasks, 1)
+
+    @ray.remote
+    def process_chunk(chunk, return_results):
+        results = []
+        for elements in chunk:
+            result = fct(*elements) if isinstance(elements, (list, tuple, set)) else fct(elements)
+            if return_results:
+                results.append(result)
+        return results
+
+    tasks = []
+    for _ in range(n_tasks):
+        # Create a chunk using islice, it will not materialize the full list
+        chunk = list(itertools.islice(it, chunk_size))
+        if not chunk:
+            break  # No more data to process
+        task = process_chunk.remote(chunk, return_results)
+        tasks.append(task)
+
+    results = ray.get(tasks)
+
+    if init_and_shutdown_ray:
+        ray.shutdown()
+
+    if return_results:
+        # Flatten the list of results if needed
+        flatten_results = [item for sublist in results for item in sublist]
+        return flatten_results
+    else:
+        return None
+
 
 
 
