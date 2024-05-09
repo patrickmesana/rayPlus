@@ -128,14 +128,13 @@ def parallel_loop_lazy(iterable, total_length, fct, n_tasks=4, return_results=Fa
 
 
 
-# The monitoring actor allows to have an elegant way to collect states without locks or the need to use timers
 @ray.remote
 class MonitoringActor:
     def __init__(self):
         self.states = {}  # Stores task_id and their latest completion percentage
 
     def update_state(self, task_id, completion_percentage):
-        self.states[task_id] = completion_percentage  # Store completion as a numerical value
+        self.states[task_id] = completion_percentage
 
     def get_states(self):
         return self.states
@@ -147,45 +146,38 @@ class MonitoringActor:
         average_completion = total_completion / len(self.states)
         return average_completion
 
-    
-
 @ray.remote
 class TaskActor:
     def __init__(self, monitoring_actor):
         self.monitoring_actor = monitoring_actor
 
-    def process_chunk(self, iterable, fct, start_index, end_index, return_results, task_id):
+    def process_chunk(self, chunk, fct, task_id, return_results):
         results = []
-        total_elements = end_index - start_index
-        for index, el in enumerate(iterable[start_index:end_index], start=start_index):
-            completion_percentage = (index - start_index + 1) / total_elements * 100
+        total_elements = len(chunk)
+        for index, el in enumerate(chunk):
+            completion_percentage = (index + 1) / total_elements * 100
             self.monitoring_actor.update_state.remote(task_id, completion_percentage)
-
-            if isinstance(el, (list, tuple, set)):
-                result = fct(*el)
-            else:
-                result = fct(el)
+            result = fct(*el) if isinstance(el, (list, tuple, set)) else fct(el)
             if return_results:
                 results.append(result)
-
         return results
 
-
-
-
-def parallel_loop_with_progress(iterable, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, progress_update_interval=2):
+def parallel_loop_lazy_with_progress(iterable, total_length, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, progress_update_interval=5):
     if init_and_shutdown_ray:
         ray.init()
 
     monitoring_actor = MonitoringActor.remote()  # Initialize the monitoring actor
-    n = len(iterable)
-    chunk_size = max(n // n_tasks, 1)
-
+    it = iter(iterable)
+    chunk_size = max(total_length // n_tasks, 1)
     actors = [TaskActor.remote(monitoring_actor) for _ in range(n_tasks)]
     tasks = []
+
+    # Schedule tasks with chunks
     for i, actor in enumerate(actors):
-        end_index = min(i * chunk_size + chunk_size, n)
-        task = actor.process_chunk.remote(iterable, fct, i * chunk_size, end_index, return_results, i)
+        chunk = list(itertools.islice(it, chunk_size))
+        if not chunk:
+            break
+        task = actor.process_chunk.remote(chunk, fct, i, return_results)
         tasks.append(task)
 
     pending_tasks = list(tasks)
@@ -204,6 +196,7 @@ def parallel_loop_with_progress(iterable, fct, n_tasks=4, return_results=False, 
         ray.shutdown()
 
     return results if return_results else None
+
 
 
 
