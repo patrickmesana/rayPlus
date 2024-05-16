@@ -162,9 +162,12 @@ class TaskActor:
                 results.append(result)
         return results
 
-def parallel_loop_lazy_with_progress(iterable, total_length, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, progress_update_interval=5):
+def parallel_loop_lazy_with_progress(iterable, total_length, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, progress_update_interval=5, object_store_memory=None):
     if init_and_shutdown_ray:
-        ray.init()
+        if object_store_memory:
+            ray.init(object_store_memory=object_store_memory)
+        else:
+            ray.init()
 
     monitoring_actor = MonitoringActor.remote()  # Initialize the monitoring actor
     it = iter(iterable)
