@@ -155,11 +155,13 @@ class TaskActor:
         results = []
         total_elements = len(chunk)
         for index, el in enumerate(chunk):
-            completion_percentage = (index + 1) / total_elements * 100
-            self.monitoring_actor.update_state.remote(task_id, completion_percentage)
+
             result = fct(*el) if isinstance(el, (list, tuple, set)) else fct(el)
             if return_results:
                 results.append(result)
+
+            completion_percentage = (index + 1) / total_elements * 100
+            self.monitoring_actor.update_state.remote(task_id, completion_percentage)
         return results
 
 def parallel_loop_lazy_with_progress(iterable, total_length, fct, n_tasks=4, return_results=False, init_and_shutdown_ray=True, progress_update_interval=5, object_store_memory=None):
@@ -172,12 +174,17 @@ def parallel_loop_lazy_with_progress(iterable, total_length, fct, n_tasks=4, ret
     monitoring_actor = MonitoringActor.remote()  # Initialize the monitoring actor
     it = iter(iterable)
     chunk_size = max(total_length // n_tasks, 1)
+    last_chunk_size = chunk_size + total_length % n_tasks
     actors = [TaskActor.remote(monitoring_actor) for _ in range(n_tasks)]
     tasks = []
 
     # Schedule tasks with chunks
     for i, actor in enumerate(actors):
-        chunk = list(itertools.islice(it, chunk_size))
+        if i == n_tasks - 1:
+            chunk = list(itertools.islice(it, last_chunk_size))
+        else:
+            chunk = list(itertools.islice(it, chunk_size))
+
         if not chunk:
             break
         task = actor.process_chunk.remote(chunk, fct, i, return_results)
